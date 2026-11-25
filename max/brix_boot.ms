@@ -1,4 +1,4 @@
--- BriX (Blender to 3ds Max Bridge) v0.1.1 - Tom Berczeller
+-- BriX (Blender to 3ds Max Bridge) v0.1.2 - Tom Berczeller
 -- Boot script: Blender launches 3ds Max with  -U MAXScript brix_boot.ms
 -- It loads the listener from the add-on folder (BRIX_DIR), which then
 -- picks up the job that Blender wrote for this new instance.

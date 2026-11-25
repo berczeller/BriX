@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "brix"
-version = "0.1.1"
+version = "0.1.2"
 name = "BriX"
 tagline = "Blender to 3ds Max bridge with automatic PBR materials"
 maintainer = "Tom Berczeller"

@@ -2,17 +2,17 @@
 
 ### Blender to 3ds Max bridge with automatic PBR materials, for Windows.
 
-![Blender](https://img.shields.io/badge/Blender-5.2%2B-7fd3ff?style=flat-square) ![3ds Max](https://img.shields.io/badge/3ds%20Max-2027-ff8fa3?style=flat-square) ![Windows](https://img.shields.io/badge/Windows-x64-1a9fff?style=flat-square) ![Python](https://img.shields.io/badge/Python-3-c4a7ff?style=flat-square) ![Version](https://img.shields.io/badge/version-0.1.1-ffc36b?style=flat-square) ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-6fd6a0?style=flat-square)
+![Blender](https://img.shields.io/badge/Blender-5.2%2B-7fd3ff?style=flat-square) ![3ds Max](https://img.shields.io/badge/3ds%20Max-2027-ff8fa3?style=flat-square) ![Windows](https://img.shields.io/badge/Windows-x64-1a9fff?style=flat-square) ![Python](https://img.shields.io/badge/Python-3-c4a7ff?style=flat-square) ![Version](https://img.shields.io/badge/version-0.1.2-ffc36b?style=flat-square) ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-6fd6a0?style=flat-square)
 
 ---
 
-One button in Blender sends your visible objects to 3ds Max. Modifiers and transforms are baked, pivots stay where they are, shading becomes smoothing groups, empties become Point helpers, and materials are rebuilt as a Multi/Sub-Object with PBR sub-materials and textures assigned. Your Blender scene is never modified.
+One button in Blender sends your visible objects to 3ds Max. Modifiers and transforms are baked, pivots stay where they are, shading becomes smoothing groups, empties become Dummy helpers, and materials are rebuilt as a Multi/Sub-Object with PBR sub-materials and textures assigned. Your Blender scene is never modified.
 
 ## Features
 
 - Sends visible or selected objects into a running 3ds Max, or launches a new one
 - Meshes, curves, text, surfaces and metaballs, converted with all modifiers applied
-- Empties become Point helpers with their full transform, and the hierarchy is rebuilt
+- Empties become Dummy helpers with their full transform, and the hierarchy is rebuilt
 - Collection instances and Geometry Nodes instances come in as real objects
 - Blender collections become Max layers
 - Sharp edges, flat faces and custom normal splits become smoothing groups
@@ -30,7 +30,7 @@ One button in Blender sends your visible objects to 3ds Max. Modifiers and trans
 
 ### 1. Blender add-on
 
-1. Get `BriX-0.1.1.zip` from the Releases page, or build it (see [Building from source](#building-from-source)).
+1. Get `BriX-0.1.2.zip` from the Releases page, or build it (see [Building from source](#building-from-source)).
 2. In Blender, go to **Edit > Preferences > Get Extensions**, open the dropdown at the top right and pick **Install from Disk...**.
 3. Select the zip. The panel shows up in the 3D Viewport sidebar (**N**) under the **BriX** tab.
 
@@ -46,7 +46,7 @@ One button in Blender sends your visible objects to 3ds Max. Modifiers and trans
 ### 3. Install the 3ds Max listener (once)
 
 1. In the same preferences panel, click **Install 3ds Max Listener**.
-2. Restart 3ds Max. The MAXScript Listener should print `[BriX] listener v0.1.1 running`.
+2. Restart 3ds Max. The MAXScript Listener should print `[BriX] listener v0.1.2 running`.
 
 This copies `scripts\BriX\brix_max.py` and `scripts\startup\brix_startup.ms`. After updating the add-on, click the button again so Max gets the new version.
 
@@ -68,16 +68,9 @@ The panel shows whether a running Max listener is detected and warns when its ve
 
 ### Empties
 
-Empties don't go through the FBX. BriX rebuilds each one in Max as a **Point** helper with the exact world transform (rotation and scale included), its size, and a display that matches the Blender one:
+Empties don't go through the FBX. BriX rebuilds each one in Max as a **Dummy** helper with the exact world transform (rotation and scale included). The Dummy box is as wide as the empty's display size, whatever its display type in Blender.
 
-| Blender display | Point helper |
-|---|---|
-| Plain Axes, Circle | Cross |
-| Arrows, Single Arrow, Cone | Axis Tripod |
-| Cube, Image | Box |
-| Sphere | Cross and Box |
-
-Parenting works in every direction: meshes under empties, empties under meshes, empties under empties. A collection instance empty comes in as a Point with its instanced objects as children.
+Parenting works in every direction: meshes under empties, empties under meshes, empties under empties. A collection instance empty comes in as a Dummy with its instanced objects as children.
 
 ### Texture suffixes
 
@@ -108,7 +101,7 @@ Missing maps are also searched for next to the found ones: if only `rock_bc.png`
 
 1. Merges the FBX into the current scene with automatic unit conversion, so 1 m stays 1 m whatever your system units are.
 2. Converts to Editable Poly and resets normals to smoothing groups (unless explicit normals are on).
-3. Renames objects back to their Blender names and builds a Point helper for every empty.
+3. Renames objects back to their Blender names and builds a Dummy helper for every empty.
 4. Builds one Multi/Sub-Object per object. ID N is Blender slot N, and each sub-material is named after the Blender material.
 5. Restores parenting between sent objects and puts them on layers named after their collections.
 
@@ -144,7 +137,7 @@ Blender 5.2 or newer.
     blender --command extension validate
     blender --command extension build --output-dir release
 
-The build writes `brix-0.1.1.zip` to `release/`.
+The build writes `brix-0.1.2.zip` to `release/`.
 
 ## Credits
 

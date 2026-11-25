@@ -1,6 +1,6 @@
 # BriX (Blender to 3ds Max Bridge)
 # Author: Tom Berczeller
-# Version: 0.1.1
+# Version: 0.1.2
 
 import glob
 import os

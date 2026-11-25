@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here. The format follows Keep a Changelog and the project uses Semantic Versioning.
 
+## [0.1.2] - 2026-11-25
+
+### Changed
+- Empties now come into 3ds Max as Dummy helpers instead of Point helpers, with the box sized to the empty's display size
+
 ## [0.1.1] - 2026-11-25
 
 ### Fixed
