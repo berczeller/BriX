@@ -1,0 +1,24 @@
+schema_version = "1.0.0"
+
+id = "brix"
+version = "0.1.0"
+name = "BriX"
+tagline = "Blender to 3ds Max bridge with automatic PBR materials"
+maintainer = "Tom Berczeller"
+type = "add-on"
+
+blender_version_min = "5.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+copyright = ["2026 Tom Berczeller"]
+
+# 3ds Max only runs on Windows
+platforms = ["windows-x64"]
+
+tags = ["Import-Export"]
+
+[permissions]
+files = "Writes FBX/job files to temp and installs the 3ds Max listener"
+
+[build]
+paths_exclude_pattern = ["__pycache__/", ".*", "*.zip", "/release/"]
