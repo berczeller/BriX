@@ -2,7 +2,7 @@
 
 ### Blender to 3ds Max bridge with automatic PBR materials, for Windows.
 
-![Blender](https://img.shields.io/badge/Blender-5.2%2B-7fd3ff?style=flat-square) ![3ds Max](https://img.shields.io/badge/3ds%20Max-2027-ff8fa3?style=flat-square) ![Windows](https://img.shields.io/badge/Windows-x64-1a9fff?style=flat-square) ![Python](https://img.shields.io/badge/Python-3-c4a7ff?style=flat-square) ![Version](https://img.shields.io/badge/version-0.1.0-ffc36b?style=flat-square) ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-6fd6a0?style=flat-square)
+![Blender](https://img.shields.io/badge/Blender-5.2%2B-7fd3ff?style=flat-square) ![3ds Max](https://img.shields.io/badge/3ds%20Max-2027-ff8fa3?style=flat-square) ![Windows](https://img.shields.io/badge/Windows-x64-1a9fff?style=flat-square) ![Python](https://img.shields.io/badge/Python-3-c4a7ff?style=flat-square) ![Version](https://img.shields.io/badge/version-0.1.1-ffc36b?style=flat-square) ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-6fd6a0?style=flat-square)
 
 ---
 
@@ -30,7 +30,7 @@ One button in Blender sends your visible objects to 3ds Max. Modifiers and trans
 
 ### 1. Blender add-on
 
-1. Get `BriX-0.1.0.zip` from the Releases page, or build it (see [Building from source](#building-from-source)).
+1. Get `BriX-0.1.1.zip` from the Releases page, or build it (see [Building from source](#building-from-source)).
 2. In Blender, go to **Edit > Preferences > Get Extensions**, open the dropdown at the top right and pick **Install from Disk...**.
 3. Select the zip. The panel shows up in the 3D Viewport sidebar (**N**) under the **BriX** tab.
 
@@ -46,7 +46,7 @@ One button in Blender sends your visible objects to 3ds Max. Modifiers and trans
 ### 3. Install the 3ds Max listener (once)
 
 1. In the same preferences panel, click **Install 3ds Max Listener**.
-2. Restart 3ds Max. The MAXScript Listener should print `[BriX] listener v0.1.0 running`.
+2. Restart 3ds Max. The MAXScript Listener should print `[BriX] listener v0.1.1 running`.
 
 This copies `scripts\BriX\brix_max.py` and `scripts\startup\brix_startup.ms`. After updating the add-on, click the button again so Max gets the new version.
 
@@ -144,7 +144,7 @@ Blender 5.2 or newer.
     blender --command extension validate
     blender --command extension build --output-dir release
 
-The build writes `brix-0.1.0.zip` to `release/`.
+The build writes `brix-0.1.1.zip` to `release/`.
 
 ## Credits
 

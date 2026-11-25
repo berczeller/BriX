@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here. The format follows Keep a Changelog and the project uses Semantic Versioning.
 
+## [0.1.1] - 2026-11-25
+
+### Fixed
+- Texture folders of old jobs in `%TEMP%\BriX` are now cleaned up after 24 hours instead of piling up
+
 ## [0.1.0] - 2026-11-25
 
 ### Added

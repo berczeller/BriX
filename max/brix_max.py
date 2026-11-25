@@ -1,6 +1,6 @@
 # BriX (Blender to 3ds Max Bridge) - 3ds Max side
 # Author: Tom Berczeller
-# Version: 0.1.0
+# Version: 0.1.1
 #
 # Listens for jobs written by the Blender add-on, merges the FBX into the
 # current scene and rebuilds materials as Multi/Sub-Object + PBR sub-materials.
@@ -19,7 +19,7 @@ try:
 except ImportError:  # older Max
     from PySide2.QtCore import QTimer
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 JOB_VERSION = 1  # newest job format this listener understands
 JOB_DIR = os.path.join(tempfile.gettempdir(), "BriX")
 POLL_MS = 1000
