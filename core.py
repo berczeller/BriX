@@ -6,6 +6,7 @@
 import json
 import os
 import re
+import shutil
 import tempfile
 import time
 import tomllib
@@ -65,11 +66,13 @@ def cleanup_old_jobs(max_age_hours=24):
     now = time.time()
     for f in os.listdir(d):
         p = os.path.join(d, f)
-        if f.startswith("listener_"):
-            continue
         try:
-            if os.path.isfile(p) and now - os.path.getmtime(p) > max_age_hours * 3600:
-                os.remove(p)
+            if now - os.path.getmtime(p) <= max_age_hours * 3600:
+                continue
+            if os.path.isdir(p):
+                shutil.rmtree(p, ignore_errors=True)  # <job>_tex folders
+            else:
+                os.remove(p)  # also heartbeats left behind by a Max that crashed
         except OSError:
             pass
 
