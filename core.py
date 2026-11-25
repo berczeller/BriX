@@ -360,7 +360,7 @@ def _unique_name(base, used):
 
 
 def _empty_info(ob, unit):
-    """Empties are rebuilt in Max as Point helpers from their full world matrix."""
+    """Empties are rebuilt in Max as Dummy helpers from their full world matrix."""
     mw = ob.matrix_world
     # columns of the 4x4 (X, Y, Z axes and translation) are the rows of a Max Matrix3
     rows = [[mw[r][c] for r in range(3)] for c in range(4)]
@@ -407,7 +407,7 @@ def export_job(context, settings):
     mat_infos = {}
     written_images = {}
     objects_out = []    # meshes, sent through the FBX
-    empties_out = []    # rebuilt in Max as Point helpers
+    empties_out = []    # rebuilt in Max as Dummy helpers
     parent_of = {}      # sent name -> source parent name, resolved at the end
     used = set()
     counter = {"mat": 0, "obj": 0, "sharp": 0}

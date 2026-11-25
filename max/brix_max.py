@@ -1,6 +1,6 @@
 # BriX (Blender to 3ds Max Bridge) - 3ds Max side
 # Author: Tom Berczeller
-# Version: 0.1.1
+# Version: 0.1.2
 #
 # Listens for jobs written by the Blender add-on, merges the FBX into the
 # current scene and rebuilds materials as Multi/Sub-Object + PBR sub-materials.
@@ -19,23 +19,11 @@ try:
 except ImportError:  # older Max
     from PySide2.QtCore import QTimer
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 JOB_VERSION = 1  # newest job format this listener understands
 JOB_DIR = os.path.join(tempfile.gettempdir(), "BriX")
 POLL_MS = 1000
 APPDATA_ID = 0x42726958  # "BriX": per-node AppData slot holding the Blender object name
-
-# Blender empty display type -> Point helper flags (cross, axis tripod, box)
-_POINT_STYLE = {
-    "PLAIN_AXES": (True, False, False),
-    "ARROWS": (False, True, False),
-    "SINGLE_ARROW": (False, True, False),
-    "CONE": (False, True, False),
-    "CUBE": (False, False, True),
-    "SPHERE": (True, False, True),
-    "CIRCLE": (True, False, False),
-    "IMAGE": (False, False, True),
-}
 
 _state = {"timer": None, "busy": False}
 
@@ -240,14 +228,11 @@ def _put_on_layer(node, name):
         _log("could not put '%s' on layer '%s': %s" % (node.name, name, e))
 
 
-def _make_point(info, meters):
-    node = rt.Point()
-    cross, tripod, box = _POINT_STYLE.get(info.get("display"), (True, False, False))
-    node.cross = cross
-    node.axistripod = tripod
-    node.box = box
-    node.centermarker = False
-    node.size = max(float(info.get("size", 1.0)) * meters, 0.001)
+def _make_dummy(info, meters):
+    """Rebuild a Blender empty as a Dummy helper, a box as wide as the empty's display size."""
+    node = rt.Dummy()
+    size = max(float(info.get("size", 1.0)) * meters, 0.001)
+    node.boxsize = rt.Point3(size, size, size)
     rows = info["matrix"]
     rows = rows[:3] + [[v * meters for v in rows[3]]]
     node.transform = rt.Matrix3(*[rt.Point3(*r) for r in rows])
@@ -304,7 +289,7 @@ def process_job(job):
         if empties:
             meters = float(rt.units.decodeValue("1m"))
             for info in empties:
-                placed[info["name"]] = _make_point(info, meters)
+                placed[info["name"]] = _make_dummy(info, meters)
 
         for info in everything:
             node = placed.get(info["name"])
