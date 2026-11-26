@@ -1,4 +1,4 @@
--- BriX (Blender to 3ds Max Bridge) v0.1.2 - Tom Berczeller
+-- BriX (Blender to 3ds Max Bridge) v0.2.0 - Tom Berczeller
 -- Startup script: installed into <Max user scripts>\startup by the Blender add-on.
 -- Starts the BriX listener every time 3ds Max opens, so "Send to 3ds Max"
 -- from Blender merges straight into this session.
