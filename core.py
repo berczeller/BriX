@@ -5,7 +5,6 @@
 
 import json
 import os
-import re
 import shutil
 import tempfile
 import time
@@ -16,18 +15,17 @@ import bpy
 import numpy as np
 from mathutils import Matrix
 
+from . import textures
+
 with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "blender_manifest.toml"), "rb") as _fh:
     ADDON_VERSION = tomllib.load(_fh)["version"]
 
-JOB_VERSION = 1
+JOB_VERSION = 2
 GEOMETRY_TYPES = {'MESH', 'CURVE', 'SURFACE', 'FONT', 'META'}
 TEMP_PREFIX = "BRIX_"
 HEARTBEAT_MAX_AGE = 10.0  # seconds; a Max listener older than this is considered gone
 SPLIT_DOT = 0.9999        # corner normals closer than this (~0.8 deg) count as "the same"
 
-TEX_SUFFIXES = ("bc", "ao", "nrm", "mg")
-IMAGE_EXTS = (".png", ".tga", ".tif", ".tiff", ".jpg", ".jpeg", ".exr", ".dds", ".bmp", ".psd", ".hdr")
-_SUFFIX_RE = re.compile(r"(?:^|_)(bc|ao|nrm|mg)(?=_|$)", re.IGNORECASE)
 
 
 def job_dir():
@@ -80,12 +78,6 @@ def cleanup_old_jobs(max_age_hours=24):
 # --------------------------------------------------------------------------- #
 # Textures
 # --------------------------------------------------------------------------- #
-
-def _classify(path):
-    stem = os.path.splitext(os.path.basename(path))[0]
-    hits = _SUFFIX_RE.findall(stem)
-    return hits[-1].lower() if hits else None
-
 
 def _image_nodes(tree, seen=None):
     seen = seen if seen is not None else set()
@@ -155,30 +147,6 @@ def _image_path(img, out_dir, log, written):
     return None
 
 
-def _find_siblings(path, found):
-    """Fill missing map types with files next to a known map: rock_bc.png -> rock_mg.tga."""
-    folder = os.path.dirname(path)
-    stem = os.path.splitext(os.path.basename(path))[0]
-    m = list(_SUFFIX_RE.finditer(stem))
-    if not m:
-        return
-    m = m[-1]
-    prefix, rest = stem[:m.start(1)], stem[m.end(1):]
-    try:
-        files = os.listdir(folder)
-    except OSError:
-        return
-    lower = {f.lower(): f for f in files}
-    for kind in TEX_SUFFIXES:
-        if kind in found:
-            continue
-        for ext in IMAGE_EXTS:
-            cand = (prefix + kind + rest + ext).lower()
-            if cand in lower:
-                found[kind] = os.path.join(folder, lower[cand])
-                break
-
-
 def material_info(mat, out_dir, log, written):
     info = {"name": mat.name, "base_color": [0.8, 0.8, 0.8, 1.0],
             "metallic": 0.0, "roughness": 0.5, "textures": {}}
@@ -192,13 +160,14 @@ def material_info(mat, out_dir, log, written):
                 break
         for img in _image_nodes(tree):
             p = _image_path(img, out_dir, log, written)
-            kind = _classify(p) if p else None
+            kind = textures.classify(p) if p else None
             if kind and kind not in info["textures"]:
                 info["textures"][kind] = p
     else:
         info["base_color"] = list(mat.diffuse_color)
     for p in list(info["textures"].values()):
-        _find_siblings(p, info["textures"])
+        textures.find_siblings(p, info["textures"])
+    info["channels"] = textures.resolve(info["textures"])
     return info
 
 
@@ -343,15 +312,42 @@ def collect_objects(context, scope):
     return objs
 
 
-def _layer_name(ob, scene):
+def _collection_name(ob, scene):
+    """First collection of an object, None for the scene's root collection."""
     for c in ob.users_collection:
         if c != scene.collection:
             return c.name
     return None
 
 
+def _collection_parents(scene):
+    """collection name -> parent collection name (None under the root)."""
+    parents = {}
+    stack = [(c, None) for c in scene.collection.children]
+    while stack:
+        c, parent = stack.pop()
+        if c.name in parents:
+            continue
+        parents[c.name] = parent
+        stack.extend((child, c.name) for child in c.children)
+    return parents
+
+
+def _weighted_info(ob, mode):
+    """Settings for a 3ds Max Weighted Normals modifier, or None.
+    AUTO: objects with an active Weighted Normal modifier. ALL: every mesh."""
+    if mode == 'OFF':
+        return None
+    for md in getattr(ob, "modifiers", ()):
+        if md.type == 'WEIGHTED_NORMAL' and md.show_viewport:
+            return {"mode": md.mode, "weight": md.weight, "keep_sharp": md.keep_sharp}
+    if mode == 'ALL':
+        return {"mode": 'FACE_AREA_WITH_ANGLE', "weight": 50, "keep_sharp": True}
+    return None
+
+
 def _unique_name(base, used):
-    name, k = base, 2
+    name, k = base, 1
     while name in used:
         name = f"{base}.{k:03d}"
         k += 1
@@ -361,13 +357,15 @@ def _unique_name(base, used):
 
 def _empty_info(ob, unit):
     """Empties are rebuilt in Max as Dummy helpers from their full world matrix."""
-    mw = ob.matrix_world
+    return _helper_info(ob.matrix_world, ob.empty_display_size * 2.0 * unit,  # Blender size is a radius
+                        unit, ob.empty_display_type)
+
+
+def _helper_info(mw, size, unit, display='CUBE'):
     # columns of the 4x4 (X, Y, Z axes and translation) are the rows of a Max Matrix3
     rows = [[mw[r][c] for r in range(3)] for c in range(4)]
     rows[3] = [v * unit for v in rows[3]]
-    return {"display": ob.empty_display_type,
-            "size": ob.empty_display_size * 2.0 * unit,  # Blender size is a radius
-            "matrix": rows}
+    return {"display": display, "size": size, "matrix": rows}
 
 
 def export_job(context, settings):
@@ -377,7 +375,10 @@ def export_job(context, settings):
     keep_explicit = bool(getattr(settings, "keep_explicit_normals", False))
     replace_prev = bool(getattr(settings, "replace_previous", True))
     include_instances = bool(getattr(settings, "include_instances", True))
-    use_layers = bool(getattr(settings, "collections_as_layers", True))
+    collections_as = getattr(settings, "collections_as", 'LAYERS')
+    use_layers = collections_as in {'LAYERS', 'BOTH'}
+    use_dummies = collections_as in {'DUMMIES', 'BOTH'}
+    weighted_mode = getattr(settings, "weighted_normals", 'AUTO')
 
     sources = collect_objects(context, scope)
     if not sources:
@@ -412,8 +413,9 @@ def export_job(context, settings):
     used = set()
     counter = {"mat": 0, "obj": 0, "sharp": 0}
 
-    def add_mesh(name, ob_eval, mw, parent, layer, geometry_instance=False):
-        res = build_export_mesh(ob_eval, mw, name, keep_explicit, log, depsgraph, geometry_instance)
+    def add_mesh(name, ob_eval, mw, parent, coll, weighted, geometry_instance=False):
+        res = build_export_mesh(ob_eval, mw, name, keep_explicit and not weighted, log, depsgraph,
+                                geometry_instance)
         if res is None:
             log.append(f"'{name}': no faces, skipped")
             return
@@ -449,20 +451,22 @@ def export_job(context, settings):
 
         name = _unique_name(name, used)
         parent_of[name] = parent
-        objects_out.append({"token": token_name, "name": name, "layer": layer, "slots": slots})
+        objects_out.append({"token": token_name, "name": name, "collection": coll, "slots": slots,
+                            "weighted": weighted})
 
     try:
         for ob in sources:
-            layer = _layer_name(ob, src_scene) if use_layers else None
+            coll = _collection_name(ob, src_scene)
             parent = ob.parent.name if ob.parent else None
             if ob.type == 'EMPTY':
                 info = _empty_info(ob, unit)
-                info.update(name=_unique_name(ob.name, used), layer=layer)
+                info.update(name=_unique_name(ob.name, used), collection=coll)
                 parent_of[info["name"]] = parent
                 empties_out.append(info)
             else:
                 ob_eval = ob.evaluated_get(depsgraph)
-                add_mesh(ob.name, ob_eval, ob_eval.matrix_world.copy(), parent, layer)
+                weighted = _weighted_info(ob, weighted_mode) if ob.type == 'MESH' else None
+                add_mesh(ob.name, ob_eval, ob_eval.matrix_world.copy(), parent, coll, weighted)
 
         if include_instances:
             instancers = {ob.name: ob for ob in sources}
@@ -477,13 +481,35 @@ def export_job(context, settings):
                 if own_geometry and (owner.type != 'MESH' or iob.type != 'MESH'):
                     continue  # a curve or text object's own mesh, already sent above
                 # instance data is only valid inside this loop, so bake it right away
-                layer = _layer_name(owner, src_scene) if use_layers else None
+                coll = _collection_name(owner, src_scene)
                 base = f"{owner.name}_instance" if own_geometry else f"{owner.name}_{iob.original.name}"
-                add_mesh(base, iob, inst.matrix_world.copy(), owner.name, layer, own_geometry)
+                weighted = None if own_geometry else _weighted_info(iob.original, weighted_mode)
+                add_mesh(base, iob, inst.matrix_world.copy(), owner.name, coll, weighted, own_geometry)
 
         for o in objects_out + empties_out:
             p = parent_of.get(o["name"])
             o["parent"] = p if p in parent_of and p != o["name"] else None
+
+        # collections become Max layers (nested like the collections) and/or Dummy helpers
+        coll_parent = _collection_parents(src_scene)
+        layers = {}
+        for o in objects_out + empties_out:
+            c = o["collection"]
+            while c is not None and c not in layers:
+                layers[c] = coll_parent.get(c)
+                c = layers[c]
+        if use_dummies:
+            coll_dummy = {c: _unique_name(c, used) for c in layers}
+            for c, dname in coll_dummy.items():
+                info = _helper_info(Matrix.Identity(4), unit, unit)
+                info.update(name=dname, collection=c, collection_dummy=True,
+                            parent=coll_dummy.get(layers[c]))
+                empties_out.append(info)
+            for o in objects_out + empties_out:
+                if o["parent"] is None and not o.get("collection_dummy") and o["collection"]:
+                    o["parent"] = coll_dummy[o["collection"]]
+        for o in objects_out + empties_out:
+            o["layer"] = o["collection"] if use_layers else None
 
         if objects_out:
             with context.temp_override(scene=temp_scene, view_layer=temp_scene.view_layers[0]):
@@ -537,8 +563,10 @@ def export_job(context, settings):
         "blend": bpy.data.filepath,
         "keep_explicit_normals": keep_explicit,
         "replace_previous": replace_prev,
+        "reuse_materials": bool(getattr(settings, "reuse_materials", True)),
         "objects": objects_out,
         "empties": empties_out,
+        "layers": layers if use_layers else {},
         "materials": mat_infos,
         "log": log,
     }

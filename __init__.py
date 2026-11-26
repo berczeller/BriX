@@ -1,7 +1,8 @@
 # BriX (Blender to 3ds Max Bridge)
 # Author: Tom Berczeller
-# Version: 0.1.2
+# Version: 0.2.0
 
+import atexit
 import glob
 import os
 import shutil
@@ -11,7 +12,7 @@ import uuid
 import bpy
 from bpy.props import BoolProperty, EnumProperty, PointerProperty, StringProperty
 
-from . import core
+from . import core, receive
 
 ADDON_DIR = os.path.dirname(os.path.abspath(__file__))
 MAX_DIR = os.path.join(ADDON_DIR, "max")
@@ -63,11 +64,15 @@ class BRIX_Preferences(bpy.types.AddonPreferences):
         name="Max user scripts folder", subtype='DIR_PATH', default="",
         description="Your 3ds Max 2027 user 'scripts' folder. Leave empty to auto-detect "
                     "(%LOCALAPPDATA%\\Autodesk\\3dsMax\\2027 - 64bit\\ENU\\scripts)")
+    receive_from_max: BoolProperty(
+        name="Receive from 3ds Max", default=True,
+        description="Import what you send from the BriX panel in 3ds Max into this Blender")
 
     def draw(self, context):
         col = self.layout.column()
         col.prop(self, "max_exe")
         col.prop(self, "max_scripts_dir")
+        col.prop(self, "receive_from_max")
         detected = self.max_scripts_dir or _detect_max_scripts_dir()
         col.label(text=f"Scripts folder in use: {detected or 'not found'}")
         row = col.row()
@@ -86,10 +91,25 @@ class BRIX_Settings(bpy.types.PropertyGroup):
         description="Send collection instances and Geometry Nodes instances as real objects, "
                     "parented to the object that instances them",
         default=True)
-    collections_as_layers: BoolProperty(
-        name="Collections as layers",
-        description="Put each object in a 3ds Max layer named after its Blender collection",
-        default=True)
+    collections_as: EnumProperty(
+        name="Collections",
+        description="What Blender collections become in 3ds Max",
+        items=[('LAYERS', "Layers", "Each collection becomes a Max layer, nested like the collections"),
+               ('DUMMIES', "Dummies", "Each collection becomes a Dummy helper at the origin, with its "
+                                      "objects and child collections parented to it"),
+               ('BOTH', "Layers and Dummies", "Layers plus Dummy helpers"),
+               ('NONE', "Nothing", "Objects go to the current layer, no hierarchy added")],
+        default='LAYERS')
+    weighted_normals: EnumProperty(
+        name="Weighted normals",
+        description="Add a 3ds Max Weighted Normals modifier, so the normals stay weighted "
+                    "while you edit the mesh in Max",
+        items=[('AUTO', "From Modifier", "Objects with a Weighted Normal modifier get a matching "
+                                         "Max modifier"),
+               ('ALL', "All Meshes", "Every mesh gets a Max Weighted Normals modifier"),
+               ('OFF', "Off", "No Max modifier. Weighted normals come in as smoothing groups, or "
+                              "as explicit normals when Keep custom normals is on")],
+        default='AUTO')
     new_instance: BoolProperty(
         name="Open in new 3ds Max",
         description="Launch a fresh 3ds Max and import there, instead of merging into the "
@@ -101,6 +121,11 @@ class BRIX_Settings(bpy.types.PropertyGroup):
                     "explicit normals. They look exact, but are lost if you edit topology in Max. "
                     "Off: shading comes from smoothing groups only",
         default=False)
+    reuse_materials: BoolProperty(
+        name="Reuse materials by name",
+        description="If 3ds Max already has a material with the same name, use it as it is "
+                    "instead of building a new one. Off: always rebuild from Blender",
+        default=True)
     replace_previous: BoolProperty(
         name="Replace previous sends",
         description="In Max, delete objects from earlier BriX sends with the same name "
@@ -179,8 +204,8 @@ class BRIX_OT_send(bpy.types.Operator):
 class BRIX_OT_install_listener(bpy.types.Operator):
     bl_idname = "brix.install_listener"
     bl_label = "Install 3ds Max Listener"
-    bl_description = ("Copy the BriX listener into your 3ds Max 2027 user scripts so a "
-                      "running Max picks up sends automatically. Restart Max afterwards")
+    bl_description = ("Copy the BriX listener and panel into your 3ds Max 2027 user scripts, so "
+                      "Max picks up sends from Blender and can send back. Restart Max afterwards")
 
     def execute(self, context):
         root = bpy.path.abspath(prefs(context).max_scripts_dir) or _detect_max_scripts_dir()
@@ -190,7 +215,8 @@ class BRIX_OT_install_listener(bpy.types.Operator):
         try:
             dst = os.path.join(root, "BriX")
             os.makedirs(dst, exist_ok=True)
-            shutil.copy2(os.path.join(MAX_DIR, "brix_max.py"), dst)
+            for f in ("brix_max.py", "brix_send.py"):
+                shutil.copy2(os.path.join(MAX_DIR, f), dst)
             startup = os.path.join(root, "startup")
             os.makedirs(startup, exist_ok=True)
             shutil.copy2(os.path.join(MAX_DIR, "brix_startup.ms"), startup)
@@ -221,8 +247,10 @@ class BRIX_PT_panel(bpy.types.Panel):
         col.prop(s, "new_instance")
         col.prop(s, "keep_explicit_normals")
         col.prop(s, "replace_previous")
+        col.prop(s, "reuse_materials")
         col.prop(s, "include_instances")
-        col.prop(s, "collections_as_layers")
+        col.prop(s, "collections_as")
+        col.prop(s, "weighted_normals")
         col.separator()
         row = col.row()
         row.scale_y = 1.6
@@ -235,6 +263,12 @@ class BRIX_PT_panel(bpy.types.Panel):
         else:
             col.label(text=f"Max listener v{version} is outdated", icon='ERROR')
             col.label(text="Reinstall it in the add-on preferences and restart Max")
+        if prefs(context).receive_from_max:
+            col.label(text="Receiving from 3ds Max", icon='IMPORT')
+        else:
+            col.label(text="Receiving from 3ds Max: off", icon='CANCEL')
+        if receive._state["last"]:
+            col.label(text=receive._state["last"])
 
 
 classes = (BRIX_Preferences, BRIX_Settings, BRIX_OT_send, BRIX_OT_install_listener, BRIX_PT_panel)
@@ -244,9 +278,13 @@ def register():
     for c in classes:
         bpy.utils.register_class(c)
     bpy.types.Scene.brix = PointerProperty(type=BRIX_Settings)
+    receive.register()
+    atexit.register(receive.remove_heartbeat)
 
 
 def unregister():
+    atexit.unregister(receive.remove_heartbeat)
+    receive.unregister()
     del bpy.types.Scene.brix
     for c in reversed(classes):
         bpy.utils.unregister_class(c)

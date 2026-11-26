@@ -1,12 +1,14 @@
 # BriX (Blender to 3ds Max Bridge) - 3ds Max side
 # Author: Tom Berczeller
-# Version: 0.1.2
+# Version: 0.2.0
 #
 # Listens for jobs written by the Blender add-on, merges the FBX into the
 # current scene and rebuilds materials as Multi/Sub-Object + PBR sub-materials.
 
 import json
 import os
+import shutil
+import sys
 import tempfile
 import time
 import traceback
@@ -19,8 +21,8 @@ try:
 except ImportError:  # older Max
     from PySide2.QtCore import QTimer
 
-VERSION = "0.1.2"
-JOB_VERSION = 1  # newest job format this listener understands
+VERSION = "0.2.0"
+JOB_VERSION = 2  # newest job format this listener understands
 JOB_DIR = os.path.join(tempfile.gettempdir(), "BriX")
 POLL_MS = 1000
 APPDATA_ID = 0x42726958  # "BriX": per-node AppData slot holding the Blender object name
@@ -106,9 +108,42 @@ def start_listener():
         pass
     _log("listener v%s running (job folder: %s)" % (VERSION, JOB_DIR))
     _tick()
+    try:
+        quiet = bool(rt.GetQuietMode())  # no panel in 3dsmaxbatch or command line renders
+    except Exception:
+        quiet = False
+    if not quiet:
+        try:
+            import brix_send
+            brix_send.startup()
+        except Exception:
+            _log("Send to Blender panel failed to load:\n" + traceback.format_exc())
+
+
+def cleanup_old_jobs(max_age_hours=24):
+    """Delete job files, FBX and texture folders older than a day, from either app."""
+    now = time.time()
+    try:
+        files = os.listdir(JOB_DIR)
+    except OSError:
+        return
+    for f in files:
+        p = os.path.join(JOB_DIR, f)
+        try:
+            if now - os.path.getmtime(p) <= max_age_hours * 3600:
+                continue
+            if os.path.isdir(p):
+                shutil.rmtree(p, ignore_errors=True)
+            else:
+                os.remove(p)
+        except OSError:
+            pass
 
 
 def stop_listener():
+    sender = sys.modules.get("brix_send")
+    if sender is not None:
+        sender._panel["closing"] = True
     t = _state["timer"]
     if t is not None:
         t.stop()
@@ -216,16 +251,49 @@ def _tagged_name(node):
     return None if v is None else str(v)
 
 
-def _put_on_layer(node, name):
+def _layer(name, parents, seen=None):
+    """Layer called `name`, created if needed, nested under its parent collection's layer."""
+    layer = rt.LayerManager.getLayerFromName(name)
+    if layer is None:
+        layer = rt.LayerManager.newLayerFromName(name)
+    parent = parents.get(name)
+    seen = seen or set()
+    if parent and parent not in seen:
+        seen.add(name)
+        try:
+            layer.setParent(_layer(parent, parents, seen))
+        except Exception as e:
+            _log("could not nest layer '%s' under '%s': %s" % (name, parent, e))
+    return layer
+
+
+def _put_on_layer(node, name, parents):
     if not name:
         return
     try:
-        layer = rt.LayerManager.getLayerFromName(name)
-        if layer is None:
-            layer = rt.LayerManager.newLayerFromName(name)
-        layer.addNode(node)
+        _layer(name, parents).addNode(node)
     except Exception as e:
         _log("could not put '%s' on layer '%s': %s" % (node.name, name, e))
+
+
+_WEIGHT_MODES = {"FACE_AREA": (True, False), "CORNER_ANGLE": (False, True),
+                 "FACE_AREA_WITH_ANGLE": (True, True)}
+
+
+def _add_weighted_normals(node, info):
+    """Weighted Normals modifier on top of the Editable Poly: normals are recomputed from the
+    current topology, so the mesh stays editable without losing its shading."""
+    try:
+        mod = rt.Weighted_Normals()
+    except Exception:
+        _log("Weighted Normals modifier not available in this 3ds Max")
+        return False
+    area, angle = _WEIGHT_MODES.get(info.get("mode"), (True, True))
+    mod.useAreaWeight = area
+    mod.useAngleWeight = angle
+    mod.useSmoothingGroups = True  # hard edges from Blender stay hard
+    rt.addModifier(node, mod)
+    return True
 
 
 def _make_dummy(info, meters):
@@ -257,7 +325,9 @@ def process_job(job):
     _log("importing %d objects and %d empties from %s"
          % (len(objects), len(empties), job.get("blend") or "unsaved .blend"))
 
-    builder = MaterialBuilder(job.get("materials", {}))
+    # collected before replacing old sends, so their materials (and any edits made to them) survive
+    existing = scene_materials() if job.get("reuse_materials", True) else {}
+    builder = MaterialBuilder(job.get("materials", {}), existing)
     placed = {}
     rt.disableSceneRedraw()
     try:
@@ -280,9 +350,12 @@ def process_job(job):
                 if info is None:
                     continue
                 rt.convertToPoly(node)
-                if not job.get("keep_explicit_normals"):
+                weighted = info.get("weighted")
+                if weighted or not job.get("keep_explicit_normals"):
                     rt.brix_resetNormals(node)
                 _apply_materials(node, info, builder)
+                if weighted:
+                    _add_weighted_normals(node, weighted)
                 node.name = info["name"]
                 placed[info["name"]] = node
 
@@ -291,12 +364,13 @@ def process_job(job):
             for info in empties:
                 placed[info["name"]] = _make_dummy(info, meters)
 
+        layers = job.get("layers", {})
         for info in everything:
             node = placed.get(info["name"])
             if node is None:
                 continue
             _tag(node, info["name"])
-            _put_on_layer(node, info.get("layer"))
+            _put_on_layer(node, info.get("layer"), layers)
             p = info.get("parent")
             if p in placed:
                 node.parent = placed[p]  # Max keeps the world transform when parenting
@@ -310,7 +384,8 @@ def process_job(job):
     finally:
         rt.enableSceneRedraw()
         rt.redrawViews()
-    msg = "imported %d objects, %d materials in %.1fs" % (len(placed), len(builder.cache), time.time() - t0)
+    msg = "imported %d objects, %d materials (%d reused from the scene) in %.1fs" % (
+        len(placed), len(builder.cache), len(builder.reused), time.time() - t0)
     _log(msg)
     try:
         rt.displayTempPrompt("BriX: " + msg, 5000)
@@ -373,7 +448,10 @@ def _lin_to_srgb(c):
     return c * 12.92 if c <= 0.0031308 else 1.055 * (c ** (1 / 2.4)) - 0.055
 
 
-def _bitmap(path, linear, mono_alpha=None, name=None):
+_CHANNEL = {"R": 0, "G": 1, "B": 2, "A": 3}
+
+
+def _bitmap(path, linear, name=None):
     tex = None
     try:
         bm = rt.openBitMap(path, gamma=(1.0 if linear else rt.Name("auto")))
@@ -384,24 +462,63 @@ def _bitmap(path, linear, mono_alpha=None, name=None):
         tex = None
     if tex is None:
         tex = rt.Bitmaptexture(fileName=path)
-    if mono_alpha is not None:
-        tex.monoOutput = 1 if mono_alpha else 0   # 0 = RGB intensity, 1 = alpha
-        tex.alphaSource = 0                       # alpha from the image file
+    tex.alphaSource = 0  # alpha from the image file
     if name:
         tex.name = name
     return tex
 
 
+def _channel_map(path, channel, name):
+    """Linear map reading one channel ('R', 'G', 'B', 'A') of an image as grayscale.
+    'RGB' returns the plain bitmap. Packed maps (ORM, MaskMap...) go through a
+    Color Correction map that rewires the channel, which every renderer supports."""
+    tex = _bitmap(path, True, name=name + ("" if channel == "RGB" else "_" + channel))
+    if channel == "RGB":
+        return tex
+    cc = rt.Color_Correction()
+    cc.map = tex
+    cc.rewireMode = 3  # custom
+    idx = _CHANNEL[channel]
+    cc.rewireR = cc.rewireG = cc.rewireB = idx
+    cc.rewireA = 3
+    cc.name = tex.name + "_split"
+    return cc
+
+
+def scene_materials():
+    """name -> material for every material on a scene node, sub-materials included.
+    Multi/Sub-Object containers are skipped: only real materials are matched by name."""
+    found = {}
+    stack = list(rt.sceneMaterials)
+    seen = set()
+    while stack:
+        m = stack.pop()
+        if m is None:
+            continue
+        h = rt.getHandleByAnim(m)
+        if h in seen:
+            continue
+        seen.add(h)
+        if rt.classOf(m) == rt.Multimaterial:
+            stack.extend(m.materialList)
+        else:
+            found.setdefault(str(m.name), m)
+    return found
+
+
 class MaterialBuilder(object):
-    def __init__(self, infos):
+    def __init__(self, infos, existing=None):
         self.infos = infos
+        self.existing = existing or {}  # materials already in the scene, reused untouched
         self.cache = {}
+        self.reused = set()
         self._empty = None
         self._warned = False
+        self._maps = {}
 
     def empty_slot(self):
         if self._empty is None:
-            self._empty = self._new_mat("Empty Slot")
+            self._empty = self.existing.get("Empty Slot") or self._new_mat("Empty Slot")
         return self._empty
 
     def _new_mat(self, name):
@@ -418,55 +535,79 @@ class MaterialBuilder(object):
     def get(self, name):
         if name in self.cache:
             return self.cache[name]
+        if name in self.existing:
+            self.cache[name] = self.existing[name]
+            self.reused.add(name)
+            return self.existing[name]
         info = self.infos.get(name, {"name": name, "textures": {}})
         m = self._new_mat(name)
         self._fill(m, info)
         self.cache[name] = m
         return m
 
+    def _channel(self, path, channel, name):
+        # one map per image and channel, shared by every material that uses it
+        key = (os.path.normcase(path), channel)
+        if key not in self._maps:
+            self._maps[key] = _channel_map(path, channel, name)
+        return self._maps[key]
+
     def _fill(self, m, info):
         tx = info.get("textures", {})
+        ch = info.get("channels")
+        if ch is None:  # job from an add-on before 0.2.0
+            ch = {}
+            if "mg" in tx:
+                ch = {"metal": [tx["mg"], "RGB"], "gloss": [tx["mg"], "A"]}
+        nm = info["name"]
         missing = []
+
+        def put(props, value, label):
+            if not _set(m, props, value):
+                missing.append(label)
 
         bc = info.get("base_color", [0.8, 0.8, 0.8, 1.0])
         col = rt.Color(*[_lin_to_srgb(c) * 255.0 for c in bc[:3]])
-        _set(m, ["base_color", "basecolor", "baseColor"], col)
+        _set(m, ["baseColor", "base_color", "basecolor"], col)
         _set(m, ["metalness"], float(info.get("metallic", 0.0)))
         _set(m, ["roughness"], float(info.get("roughness", 0.5)))
 
         if "bc" in tx:
-            if not _set(m, ["base_color_map", "basecolor_map"], _bitmap(tx["bc"], False, name=info["name"] + "_bc")):
-                missing.append("base_color_map")
+            put(["base_color_map", "basecolor_map"], _bitmap(tx["bc"], False, name=nm + "_bc"), "base_color_map")
 
-        if "ao" in tx:
-            if not _set(m, ["ao_map", "ambient_occlusion_map"], _bitmap(tx["ao"], True, name=info["name"] + "_ao")):
-                missing.append("ao_map")
-
-        if "nrm" in tx:
-            nt = _bitmap(tx["nrm"], True, name=info["name"] + "_nrm")
+        normal = tx.get("nrm") or tx.get("nrm_dx")
+        if normal:
+            flip = "nrm" in tx  # OpenGL normal maps need green flipped for Max (DirectX)
+            nt = _bitmap(normal, True, name=nm + "_nrm")
             if _set(m, ["norm_map", "normal_map"], nt):
-                if not _set(m, ["norm_flip_green", "normal_flip_green", "flip_green"], True):
-                    missing.append("norm_flip_green")
+                _set(m, ["normal_flip_green", "norm_flip_green", "flip_green"], flip)
             else:
-                # fallback: Normal Bump map in the bump slot, green flipped there
-                nb = rt.Normal_Bump()
+                nb = rt.Normal_Bump()  # Physical Material: Normal Bump in the bump slot
                 nb.normal_map = nt
-                nb.flipgreen = True
-                if not _set(m, ["bump_map"], nb):
-                    missing.append("norm_map/bump_map")
+                nb.flipgreen = flip
+                put(["bump_map"], nb, "norm_map/bump_map")
 
-        if "mg" in tx:
-            met = _bitmap(tx["mg"], True, mono_alpha=False, name=info["name"] + "_mg_metal")
-            glo = _bitmap(tx["mg"], True, mono_alpha=True, name=info["name"] + "_mg_gloss")
-            if not _set(m, ["metalness_map"], met):
-                missing.append("metalness_map")
-            if not _set(m, ["roughness_map"], glo):
-                missing.append("roughness_map")
-            # read the alpha as glossiness, not roughness
-            if not _set(m, ["useGlossiness", "use_glossiness", "roughness_inv"], True):
+        if "metal" in ch:
+            path, c = ch["metal"]
+            put(["metalness_map"], self._channel(path, c, nm + "_metal"), "metalness_map")
+        if "rough" in ch or "gloss" in ch:
+            gloss = "rough" not in ch
+            path, c = ch["gloss" if gloss else "rough"]
+            put(["roughness_map"], self._channel(path, c, nm + ("_gloss" if gloss else "_rough")), "roughness_map")
+            if gloss and not (_set(m, ["useGlossiness"], 1)  # PBR material: 1 = glossiness, 2 = roughness
+                              or _set(m, ["roughness_inv"], True)):  # Physical Material
                 missing.append("glossiness toggle")
+        if "ao" in ch:
+            path, c = ch["ao"]
+            put(["ao_map", "ambient_occlusion_map"], self._channel(path, c, nm + "_ao"), "ao_map")
+
+        if "emit" in tx:
+            _set(m, ["emit_color"], rt.Color(255, 255, 255))
+            put(["emit_color_map"], _bitmap(tx["emit"], False, name=nm + "_emit"), "emit_color_map")
+            _set(m, ["emission"], 1.0)
+        if "opacity" in tx:
+            put(["opacity_map", "cutout_map"], self._channel(tx["opacity"], "RGB", nm + "_opacity"), "opacity_map")
 
         if missing:
             _log("material '%s': could not set %s. Available properties: %s"
-                 % (info["name"], ", ".join(missing),
-                    ", ".join(str(p) for p in rt.getPropNames(m))))
+                 % (nm, ", ".join(missing), ", ".join(str(p) for p in rt.getPropNames(m))))
